@@ -38,6 +38,25 @@ const chunk = (arr, n) =>
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// Build a compact "Lv 1–3,5,7–8" label from levels that actually contributed (>0 share)
+function compactLevelRanges(levels) {
+  if (!levels.length) return "";
+  levels.sort((a, b) => a - b);
+  const parts = [];
+  let start = levels[0], prev = levels[0];
+  for (let i = 1; i < levels.length; i++) {
+    const cur = levels[i];
+    if (cur === prev + 1) {
+      prev = cur;
+      continue;
+    }
+    parts.push(start === prev ? `${start}` : `${start}–${prev}`);
+    start = prev = cur;
+  }
+  parts.push(start === prev ? `${start}` : `${start}–${prev}`);
+  return parts.join(",");
+}
+
 async function runTxn(fn, max = 8) {
   let attempt = 0;
   while (true) {
@@ -195,8 +214,7 @@ async function creditRoiForUser(userDoc) {
       credited++;
 
       logger.info(
-        `  ✅ [ROI] user=${uid} plan=${planId} +${roiAmount} → totalAccumulated=${newAccum}${
-          expire ? " (EXPIRE)" : ""
+        `  ✅ [ROI] user=${uid} plan=${planId} +${roiAmount} → totalAccumulated=${newAccum}${expire ? " (EXPIRE)" : ""
         }`
       );
       if (expire) expiredNow++;
@@ -371,8 +389,8 @@ async function creditTeamForUser(userDoc) {
 
   for (const cfg of settings) {
     const level = Number(cfg.level);
-    const req   = Number(cfg.requiredMembers || 0);
-    const pct   = Number(cfg.profitPercentage || 0);
+    const req = Number(cfg.requiredMembers || 0);
+    const pct = Number(cfg.profitPercentage || 0);
 
     logger.debug(`• [TEAM] user=${uid} L${level} frontier=${frontier.length} req=${req} pct=${pct}`);
 
@@ -400,7 +418,7 @@ async function creditTeamForUser(userDoc) {
       const accSnap = await db.collection("accounts").where("userId", "in", uidChunk).get();
       accSnap.forEach((a) => {
         const earn = a.get("earnings") || {};
-        const d    = Number(earn.dailyProfit || 0);
+        const d = Number(earn.dailyProfit || 0);
         const last = (earn.lastRoiDate || "").toString();
         if (last === dateKey) levelDailyProfit += d;
       });
@@ -458,7 +476,7 @@ async function creditTeamForUser(userDoc) {
     .get();
 
   const teamTxnRef = db.collection("transactions").doc();
-  const planRefs   = activePlansSnap.docs.map((d) => d.ref);
+  const planRefs = activePlansSnap.docs.map((d) => d.ref);
 
   await runTxn(async (tx) => {
     // READS FIRST
@@ -481,7 +499,7 @@ async function creditTeamForUser(userDoc) {
       if ((pSnap.get("status") || "") !== "active") continue;
 
       const currentAccum = Number(pSnap.get("totalAccumulated") || 0);
-      const cap          = Number(pSnap.get("totalPayoutAmount") || Infinity);
+      const cap = Number(pSnap.get("totalPayoutAmount") || Infinity);
 
       if (currentAccum >= cap) {
         planUpdates.push({ ref: pSnap.ref, expire: true, expireOnly: true });
@@ -490,7 +508,7 @@ async function creditTeamForUser(userDoc) {
       }
 
       const newAccum = currentAccum + totalTeamProfit;
-      const expire   = newAccum >= cap;
+      const expire = newAccum >= cap;
 
       planUpdates.push({ ref: pSnap.ref, newAccum, expire, expireOnly: false });
       bumped++;
@@ -529,17 +547,30 @@ async function creditTeamForUser(userDoc) {
       }
     }
 
+    // Levels that produced > 0 share today
+    const contributingLevels = levelSummaries
+      .filter(l => (l.share || 0) > 0)
+      .map(l => l.level);
+
+    // Build address like "Lv 1–3" or "Lv 1,3,5–6"
+    const levelLabel = compactLevelRanges(contributingLevels);
+    const txAddress  = levelLabel ? `Lv ${levelLabel}` : "Lv —"; // safety fallback
+
     // 3) transaction record
     tx.set(teamTxnRef, {
       transactionId: teamTxnRef.id,
       userId: uid,
       type: "teamProfit",
       amount: totalTeamProfit,
-      address: "Team Profit (L1-gated, Levels 1–N)",
+      address: txAddress, // <<<<<< write the precise levels here
       status: "collected",
       balanceUpdated: true,
       timestamp: nowTs,
-      meta: { unlockRule: "L1ActiveDirects", level1ActiveCount }
+      meta: {
+        unlockRule: "L1ActiveDirects",
+        level1ActiveCount,
+        contributingLevels // keep it for analytics/debug
+      }
     });
 
     // 4) idempotency
