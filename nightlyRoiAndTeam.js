@@ -349,90 +349,94 @@ async function creditTeamForUser(userDoc) {
     return;
   }
 
-  // If already logged for today, skip quickly (outside tx)
+  // Idempotency (outside tx)
   const teamLogRef = db.collection("teamLogs").doc(`${uid}_${dateKey}`);
   if ((await teamLogRef.get()).exists) {
     logger.debug(`🔁 [TEAM] user=${uid} already credited today (${teamLogRef.id})`);
     return;
   }
 
-  // Load team settings & build levels outside tx
+  // Load team settings (ordered) and prep for BFS
   const settingsSnap = await db.collection("teamSettings").orderBy("level").get();
   const settings = settingsSnap.docs.map((d) => d.data());
   logger.info(`ℹ️ [TEAM] user=${uid} levels=${settings.length}`);
 
-  // BFS frontier
+  // We still traverse level-by-level to compute each depth's levelDailyProfit,
+  // but unlock for *every* level is controlled by Level-1 active count only.
   let frontier = [uid];
   let totalTeamProfit = 0;
   const levelSummaries = [];
 
+  let level1ActiveCount = null;   // <-- capture once when we hit depth 1
+
   for (const cfg of settings) {
     const level = Number(cfg.level);
-    const req = Number(cfg.requiredMembers || 0);
-    const pct = Number(cfg.profitPercentage || 0);
+    const req   = Number(cfg.requiredMembers || 0);
+    const pct   = Number(cfg.profitPercentage || 0);
 
     logger.debug(`• [TEAM] user=${uid} L${level} frontier=${frontier.length} req=${req} pct=${pct}`);
 
-    // Children (active) of current frontier
+    // Children (ACTIVE) of current frontier
     const childDocs = [];
     for (const parentChunk of chunk(frontier, 10)) {
-      logger.debug(
-        `  🔎 [TEAM] user=${uid} L${level} querying users with referralCode in ${JSON.stringify(
-          parentChunk
-        )}`
-      );
       const q = await db
         .collection("users")
         .where("referralCode", "in", parentChunk)
         .where("status", "==", "active")
         .get();
-      logger.debug(`  📄 [TEAM] user=${uid} L${level} fetched active directs=${q.size}`);
       childDocs.push(...q.docs);
     }
-
     const childUids = childDocs.map((d) => d.get("uid")).filter(Boolean);
 
-    // Sum their dailyProfit from accounts **only if lastRoiDate is today**
+    // Record Level-1 active directs once
+    if (level1ActiveCount === null) {
+      level1ActiveCount = childUids.length;
+      logger.info(`📌 [TEAM] user=${uid} Level-1 active directs = ${level1ActiveCount}`);
+    }
+
+    // Sum dailyProfit for this depth **only if** lastRoiDate === today
     let levelDailyProfit = 0;
     for (const uidChunk of chunk(childUids, 10)) {
-      logger.debug(
-        `  🔎 [TEAM] user=${uid} L${level} load accounts for ${JSON.stringify(uidChunk)}`
-      );
       const accSnap = await db.collection("accounts").where("userId", "in", uidChunk).get();
       accSnap.forEach((a) => {
         const earn = a.get("earnings") || {};
-        const d = Number(earn.dailyProfit || 0);
+        const d    = Number(earn.dailyProfit || 0);
         const last = (earn.lastRoiDate || "").toString();
-        if (last === dateKey) {
-          levelDailyProfit += d;
-        } else {
-          // stale dailyProfit ignored
-        }
+        if (last === dateKey) levelDailyProfit += d;
       });
     }
 
-    const unlocked = childUids.length >= req;
+    // NEW UNLOCK RULE: compare requiredMembers to **Level-1** active count
+    const unlocked = (level1ActiveCount >= req);
+
+    // Apply share only if unlocked by Level-1 gate
     const share = unlocked ? (levelDailyProfit * pct) / 100 : 0;
     totalTeamProfit += share;
+
     levelSummaries.push({
       level,
-      directs: childUids.length,
       levelDailyProfit,
-      unlocked,
+      unlockedBy: "L1ActiveDirects",
+      l1Active: level1ActiveCount,
+      req,
+      pct,
       share,
+      depthActive: childUids.length
     });
 
     logger.info(
-      `  Σ [TEAM] user=${uid} L${level} directs=${childUids.length} dailyProfit=${levelDailyProfit} unlocked=${unlocked} share=${share}`
+      `  Σ [TEAM] user=${uid} L${level} depthActive=${childUids.length} ` +
+      `levelDailyProfit=${levelDailyProfit} unlocked(L1=${level1ActiveCount} >= ${req})=${unlocked} ` +
+      `share=${share}`
     );
 
-    frontier = childUids; // next depth
+    // Move one level deeper to compute next depth's dailyProfit
+    frontier = childUids;
   }
 
   logger.info(
-    `Σ [TEAM] user=${uid} totalTeamProfit=${totalTeamProfit}; detail=${JSON.stringify(
-      levelSummaries
-    )}`
+    `Σ [TEAM] user=${uid} totalTeamProfit=${totalTeamProfit}; ` +
+    `detail=${JSON.stringify(levelSummaries)}`
   );
   if (totalTeamProfit <= 0) {
     logger.debug(`⏭ [TEAM] user=${uid} nothing to credit`);
@@ -453,16 +457,11 @@ async function creditTeamForUser(userDoc) {
     .where("status", "==", "active")
     .get();
 
-  logger.debug(`ℹ️ [TEAM] user=${uid} activePlansForBump=${activePlansSnap.size}`);
-
-  // Precreate transaction doc ID
   const teamTxnRef = db.collection("transactions").doc();
-
-  // Prepare refs for tx reads
-  const planRefs = activePlansSnap.docs.map((d) => d.ref);
+  const planRefs   = activePlansSnap.docs.map((d) => d.ref);
 
   await runTxn(async (tx) => {
-    // ---- READS FIRST --------------------------------------------------------
+    // READS FIRST
     const [acctTxnSnap, teamLogSnap] = await Promise.all([tx.get(acctRef), tx.get(teamLogRef)]);
     if (teamLogSnap.exists) {
       logger.debug(`🔁 [TEAM] user=${uid} log appeared during txn; skip credit`);
@@ -470,11 +469,8 @@ async function creditTeamForUser(userDoc) {
     }
 
     const planTxnSnaps = [];
-    for (const pRef of planRefs) {
-      planTxnSnaps.push(await tx.get(pRef));
-    }
+    for (const pRef of planRefs) planTxnSnaps.push(await tx.get(pRef));
 
-    // ---- COMPUTE ------------------------------------------------------------
     // Build updates for each active plan
     const planUpdates = []; // { ref, newAccum, expire, expireOnly }
     let bumped = 0;
@@ -482,73 +478,48 @@ async function creditTeamForUser(userDoc) {
 
     for (const pSnap of planTxnSnaps) {
       const planId = pSnap.id;
-      const status = pSnap.get("status");
-      if ((status || "") !== "active") {
-        logger.debug(`  ⏭ [TEAM] user=${uid} plan=${planId} not active at txn time`);
-        continue;
-      }
-      const currentAccum = Number(pSnap.get("totalAccumulated") || 0);
-      const cap = Number(pSnap.get("totalPayoutAmount") || Infinity);
+      if ((pSnap.get("status") || "") !== "active") continue;
 
-      // If already at/over cap, expire WITHOUT team credit
+      const currentAccum = Number(pSnap.get("totalAccumulated") || 0);
+      const cap          = Number(pSnap.get("totalPayoutAmount") || Infinity);
+
       if (currentAccum >= cap) {
         planUpdates.push({ ref: pSnap.ref, expire: true, expireOnly: true });
         expiredNow++;
-        logger.info(
-          `  ⏹ [TEAM] user=${uid} plan=${planId} already >= cap (${currentAccum}/${cap}) → EXPIRE (no team credit)`
-        );
         continue;
       }
 
       const newAccum = currentAccum + totalTeamProfit;
-      const expire = newAccum >= cap;
+      const expire   = newAccum >= cap;
 
       planUpdates.push({ ref: pSnap.ref, newAccum, expire, expireOnly: false });
       bumped++;
-      if (expire) {
-        logger.info(`  ⏹ [TEAM] user=${uid} plan=${planId} EXPIRED after team credit (cap=${cap})`);
-        expiredNow++;
-      } else {
-        logger.debug(
-          `  ➕ [TEAM] user=${uid} plan=${planId} +${totalTeamProfit} → ${newAccum}/${cap}`
-        );
-      }
+      if (expire) expiredNow++;
     }
 
-    // Determine if any plan remains active after our updates
+    // Determine if any plan remains active after updates
     let anyActiveAfter = false;
     for (const pSnap of planTxnSnaps) {
-      const wasActive = (pSnap.get("status") || "") === "active";
-      if (!wasActive) continue;
+      if ((pSnap.get("status") || "") !== "active") continue;
       const upd = planUpdates.find((u) => u.ref.path === pSnap.ref.path);
-      if (!upd) {
-        anyActiveAfter = true;
-        break;
-      }
-      if (!upd.expire) {
-        anyActiveAfter = true;
-        break;
-      }
+      if (!upd || !upd.expire) { anyActiveAfter = true; break; }
     }
 
-    // ---- WRITES (NO MORE READS) --------------------------------------------
-    // 1) increment account fields (NOTE: do NOT touch earnings.dailyProfit here)
+    // WRITES
+    const nowTs = Timestamp.now();
+
+    // 1) account increments (do NOT touch earnings.dailyProfit here)
     tx.update(acctRef, {
       "earnings.teamProfit": FieldValue.increment(totalTeamProfit),
       "earnings.totalEarned": FieldValue.increment(totalTeamProfit),
       "investment.currentBalance": FieldValue.increment(totalTeamProfit),
       "investment.remainingBalance": FieldValue.increment(totalTeamProfit),
     });
-    logger.info(`💰 [TEAM] user=${uid} account increments queued amount=${totalTeamProfit}`);
 
-    // 2) apply plan updates
-    const nowTs = Timestamp.now();
+    // 2) plan bumps
     for (const { ref, newAccum, expire, expireOnly } of planUpdates) {
       if (expireOnly) {
-        tx.update(ref, {
-          status: "expired",
-          lastCollectedDate: nowTs,
-        });
+        tx.update(ref, { status: "expired", lastCollectedDate: nowTs });
       } else {
         tx.update(ref, {
           totalAccumulated: newAccum,
@@ -558,27 +529,24 @@ async function creditTeamForUser(userDoc) {
       }
     }
 
-    // 3) single transaction record
+    // 3) transaction record
     tx.set(teamTxnRef, {
       transactionId: teamTxnRef.id,
       userId: uid,
       type: "teamProfit",
       amount: totalTeamProfit,
-      address: "Team Profit (Levels 1–8)",
+      address: "Team Profit (L1-gated, Levels 1–N)",
       status: "collected",
       balanceUpdated: true,
       timestamp: nowTs,
+      meta: { unlockRule: "L1ActiveDirects", level1ActiveCount }
     });
-    logger.info(`🧾 [TEAM] user=${uid} transactionId=${teamTxnRef.id} amount=${totalTeamProfit}`);
 
-    // 4) idempotency log
+    // 4) idempotency
     tx.set(teamLogRef, { userId: uid, date: dateKey, creditedAt: nowTs });
 
     // 5) possibly deactivate user
-    if (!anyActiveAfter) {
-      tx.update(userDoc.ref, { status: "inactive" });
-      logger.info(`📉 [TEAM] user=${uid} deactivated (no active plans remain)`);
-    }
+    if (!anyActiveAfter) tx.update(userDoc.ref, { status: "inactive" });
 
     logger.debug(`  ✔ [TEAM] user=${uid} plansBumped=${bumped}, expiredNow=${expiredNow}`);
   });
