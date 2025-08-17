@@ -261,6 +261,7 @@ async function creditRoiForUser(userDoc) {
       "earnings.dailyProfit": totalRoiToday, // replace
       "earnings.lastRoiDate": dateKey,
       "earnings.totalEarned": FieldValue.increment(totalRoiToday),
+      "earnings.totalRoi": FieldValue.increment(totalRoiToday),
       "investment.currentBalance": FieldValue.increment(totalRoiToday),
       "investment.remainingBalance": FieldValue.increment(totalRoiToday),
     });
