@@ -2,8 +2,8 @@
 // SALARY PROGRAM (single-file version for index.js)
 // ─────────────────────────────────────────────────────────────
 const { onCall, HttpsError } = require("firebase-functions/v2/https");
-const { onSchedule }         = require("firebase-functions/v2/scheduler");
-const { logger }             = require("firebase-functions");
+const { onSchedule } = require("firebase-functions/v2/scheduler");
+const { logger } = require("firebase-functions");
 const { initializeApp, getApps } = require("firebase-admin/app");
 const { getFirestore, Timestamp, FieldValue } = require("firebase-admin/firestore");
 
@@ -40,13 +40,13 @@ function toPeriodKey(ts) {
 function salaryForActiveDirectBusiness(usd) {
   // tiers from your spec/photo
   if (usd >= 100000) return { tier: 8, amount: 12000 };
-  if (usd >=  50000) return { tier: 7, amount:  5000 };
-  if (usd >=  30000) return { tier: 6, amount:  2500 };
-  if (usd >=  15000) return { tier: 5, amount:  1200 };
-  if (usd >=   7000) return { tier: 4, amount:   500 };
-  if (usd >=   4000) return { tier: 3, amount:   250 };
-  if (usd >=   2000) return { tier: 2, amount:   100 };
-  if (usd >=   1500) return { tier: 1, amount:    50 };
+  if (usd >= 50000) return { tier: 7, amount: 5000 };
+  if (usd >= 30000) return { tier: 6, amount: 2500 };
+  if (usd >= 15000) return { tier: 5, amount: 1200 };
+  if (usd >= 7000) return { tier: 4, amount: 500 };
+  if (usd >= 4000) return { tier: 3, amount: 250 };
+  if (usd >= 2000) return { tier: 2, amount: 100 };
+  if (usd >= 1500) return { tier: 1, amount: 50 };
   return { tier: 0, amount: 0 };
 }
 
@@ -90,7 +90,7 @@ const ensureSalaryProfile = onCall({ region: "us-central1" }, async (req) => {
 
   const user = userSnap.docs[0];
   const createdAt = user.get("createdAt") || Timestamp.now();
-  const status    = user.get("status") || "inactive";
+  const status = user.get("status") || "inactive";
 
   const ref = db.collection("salaryProfiles").doc(userId);
   const prof = await ref.get();
@@ -130,7 +130,15 @@ const getSalaryProfile = onCall({ region: "us-central1" }, async (req) => {
   const doc = await ref.get();
   if (!doc.exists) return { exists: false };
 
-  return { exists: true, profile: doc.data() };
+  const profile = doc.data();
+
+  // 🔴 Live preview only while window is open
+  let currentAdb = null;
+  if (profile.status === "window_open") {
+    currentAdb = await computeActiveDirectBusiness(userId);
+  }
+
+  return { exists: true, profile, currentAdb };
 });
 
 /* ─────────────────────────────────────────────────────────────
@@ -228,8 +236,8 @@ const salaryScheduler = onSchedule(
 
         const accDoc = await tr.get(accRef);
         const inv = accDoc.get("investment") || {};
-        const cb  = (inv.currentBalance || 0) + (p.salaryAmount || 0);
-        const rb  = (inv.remainingBalance || 0) + (p.salaryAmount || 0);
+        const cb = (inv.currentBalance || 0) + (p.salaryAmount || 0);
+        const rb = (inv.remainingBalance || 0) + (p.salaryAmount || 0);
 
         tr.update(accRef, {
           "investment.currentBalance": cb,
@@ -261,5 +269,5 @@ const salaryScheduler = onSchedule(
 
 // Exports (keep your other exports above/below as needed)
 exports.ensureSalaryProfile = ensureSalaryProfile;
-exports.getSalaryProfile    = getSalaryProfile;
-exports.salaryScheduler     = salaryScheduler;
+exports.getSalaryProfile = getSalaryProfile;
+exports.salaryScheduler = salaryScheduler;
