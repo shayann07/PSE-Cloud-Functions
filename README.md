@@ -1,8 +1,20 @@
 # PSE Cloud Functions
 
-This repository contains the Firebase Cloud Functions that power the **Philippine Stock Exchange (PSE) app**. These Node.js functions handle server side logic such as calculating return on investment (ROI), updating team levels and credit profits, awarding leadership bonuses, and scheduling salary profiles.
+[![Platform](https://img.shields.io/badge/Platform-Firebase-FFCA28?logo=firebase&logoColor=black)]()
+[![Language](https://img.shields.io/badge/Language-Node.js-339933?logo=nodedotjs&logoColor=white)]()
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-## Features
+> PSE Cloud Functions Repository
+
+---
+
+## 📖 Overview
+
+PSE Cloud Functions Repository
+
+---
+
+## ✨ Key Features
 
 - **computeTeamLevelsAndCreditProfit:** Updates the levels of each team and credits profit to users based on their performance.
 - **leadershipBonus:** Calculates and distributes leadership bonuses across eligible accounts.
@@ -11,7 +23,20 @@ This repository contains the Firebase Cloud Functions that power the **Philippin
 
 Each script is an independent Cloud Function deployed to Firebase.
 
-## Getting started
+---
+
+## 🛠️ Technology Stack
+
+| Component / Layer | Technology |
+|---|---|
+| **Platform** | Firebase / GCP |
+| **Primary Language** | Node.js |
+| **Architecture** | MVVM / Clean Architecture |
+| **License** | Open Source (MIT) |
+
+---
+
+## 🚀 Getting Started
 
 1. **Clone the repository**
 
@@ -38,12 +63,8 @@ Each script is an independent Cloud Function deployed to Firebase.
    firebase deploy --only functions
    ```
 
-## Technologies used
+---
 
-- **Node.js** – JavaScript runtime for building serverless functions.
-- **Firebase Cloud Functions** – Serverless execution environment for backend logic.
-- **Firebase CLI** – For deploying and managing functions.
+## 📄 License
 
-## License
-
-This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+This project is licensed under the [MIT License](LICENSE) — Copyright (c) 2026 [shayann07](https://github.com/shayann07).
