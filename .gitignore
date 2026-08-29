@@ -1,0 +1,43 @@
+# Node / Firebase Functions
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Firebase
+.firebase/
+firebase-debug.log
+firestore-debug.log
+ui-debug.log
+.firebaserc
+
+# Environment & secrets — NEVER commit these
+.env
+.env.*
+*.env
+service_account*.json
+serviceAccount*.json
+google-services.json
+GoogleService-Info.plist
+*secret*.json
+*credentials*.json
+secrets.properties
+keystore.properties
+local.properties
+
+# Keys & certs
+*.pem
+*.key
+*.jks
+*.keystore
+*.p12
+*.pfx
+
+# Build outputs
+lib/
+dist/
+.cache/
+
+# OS
+.DS_Store
+Thumbs.db
